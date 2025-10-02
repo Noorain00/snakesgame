@@ -1,0 +1,7 @@
+{
+  "base_speed": 8,
+  "speed_increase": true,
+  "grid_visible": true,
+  "particles": true,
+  "sound": true
+}

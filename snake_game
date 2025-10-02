@@ -1,0 +1,544 @@
+import pygame
+import sys
+import random
+import os
+import math
+import json
+from enum import Enum
+from typing import List, Tuple, Optional
+
+class GameState(Enum):
+    MENU = "menu"
+    PLAYING = "playing"
+    PAUSED = "paused"
+    GAME_OVER = "game_over"
+    SETTINGS = "settings"
+
+class SnakeGame:
+    def __init__(self):
+        pygame.init()
+        pygame.mixer.init()
+        
+        # Constants
+        self.CELL_SIZE = 25
+        self.WIDTH, self.HEIGHT = 1000, 700
+        self.GRID_WIDTH = self.WIDTH // self.CELL_SIZE
+        self.GRID_HEIGHT = self.HEIGHT // self.CELL_SIZE
+        
+        # Colors (Modern Dark Theme)
+        self.COLORS = {
+            'bg': (15, 15, 23),           # Dark navy
+            'grid': (25, 25, 35),         # Subtle grid
+            'snake_head': (102, 252, 241), # Cyan
+            'snake_body': (56, 178, 172),  # Teal
+            'snake_tail': (34, 116, 112),  # Dark teal
+            'food': (239, 68, 68),         # Red
+            'food_glow': (239, 68, 68, 50), # Red with alpha
+            'text_primary': (248, 250, 252), # White
+            'text_secondary': (148, 163, 184), # Gray
+            'accent': (139, 92, 246),       # Purple
+            'success': (34, 197, 94),       # Green
+            'warning': (251, 191, 36),      # Yellow
+        }
+        
+        # Screen setup
+        self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+        pygame.display.set_caption("Snake Game - Professional Edition")
+        self.clock = pygame.time.Clock()
+        
+        # Fonts
+        self.fonts = {
+            'title': pygame.font.Font(None, 64),
+            'large': pygame.font.Font(None, 48),
+            'medium': pygame.font.Font(None, 32),
+            'small': pygame.font.Font(None, 24),
+            'tiny': pygame.font.Font(None, 18)
+        }
+        
+        # Game state
+        self.state = GameState.MENU
+        self.reset_game()
+        
+        # Settings
+        self.settings = self.load_settings()
+        
+        # Particles for visual effects
+        self.particles = []
+        self.food_particles = []
+        
+        # Animation timers
+        self.menu_animation_time = 0
+        self.game_over_animation_time = 0
+        
+        # Load high score
+        self.high_score = self.load_high_score()
+        
+    def load_settings(self) -> dict:
+        """Load game settings from file"""
+        default_settings = {
+            'base_speed': 8,
+            'speed_increase': True,
+            'grid_visible': True,
+            'particles': True,
+            'sound': True
+        }
+        
+        try:
+            with open('snake_settings.json', 'r') as f:
+                settings = json.load(f)
+                return {**default_settings, **settings}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return default_settings
+    
+    def save_settings(self):
+        """Save current settings to file"""
+        with open('snake_settings.json', 'w') as f:
+            json.dump(self.settings, f, indent=2)
+    
+    def load_high_score(self) -> int:
+        """Load high score from file"""
+        try:
+            with open('snake_highscore.txt', 'r') as f:
+                return int(f.read().strip() or "0")
+        except (FileNotFoundError, ValueError):
+            return 0
+    
+    def save_high_score(self):
+        """Save high score to file"""
+        if self.score > self.high_score:
+            self.high_score = self.score
+            with open('snake_highscore.txt', 'w') as f:
+                f.write(str(self.high_score))
+    
+    def reset_game(self):
+        """Reset game to initial state"""
+        center_x = (self.GRID_WIDTH // 2) * self.CELL_SIZE
+        center_y = (self.GRID_HEIGHT // 2) * self.CELL_SIZE
+        
+        self.snake = [(center_x, center_y)]
+        self.direction = (0, 0)
+        self.next_direction = (0, 0)
+        self.food_pos = self.spawn_food()
+        self.score = 0
+        self.game_over_reason = ""
+        self.particles = []
+        self.food_particles = []
+        self.game_over_animation_time = 0
+    
+    def spawn_food(self) -> Tuple[int, int]:
+        """Spawn food at random position not occupied by snake"""
+        while True:
+            x = random.randint(0, self.GRID_WIDTH - 1) * self.CELL_SIZE
+            y = random.randint(0, self.GRID_HEIGHT - 1) * self.CELL_SIZE
+            if (x, y) not in self.snake:
+                return (x, y)
+    
+    def create_particles(self, pos: Tuple[int, int], color: Tuple[int, int, int], count: int = 10):
+        """Create particle explosion effect"""
+        if not self.settings['particles']:
+            return
+            
+        for _ in range(count):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(2, 6)
+            self.particles.append({
+                'pos': [pos[0] + self.CELL_SIZE // 2, pos[1] + self.CELL_SIZE // 2],
+                'vel': [math.cos(angle) * speed, math.sin(angle) * speed],
+                'life': random.uniform(30, 60),
+                'max_life': 60,
+                'color': color
+            })
+    
+    def create_food_particles(self, pos: Tuple[int, int]):
+        """Create subtle particles around food"""
+        if not self.settings['particles']:
+            return
+            
+        if random.random() < 0.1:  # 10% chance per frame
+            angle = random.uniform(0, 2 * math.pi)
+            distance = random.uniform(15, 25)
+            x = pos[0] + self.CELL_SIZE // 2 + math.cos(angle) * distance
+            y = pos[1] + self.CELL_SIZE // 2 + math.sin(angle) * distance
+            
+            self.food_particles.append({
+                'pos': [x, y],
+                'vel': [math.cos(angle + math.pi) * 0.5, math.sin(angle + math.pi) * 0.5],
+                'life': random.uniform(60, 90),
+                'max_life': 90,
+                'size': random.uniform(1, 3)
+            })
+    
+    def update_particles(self):
+        """Update all particle systems"""
+        # Update explosion particles
+        for particle in self.particles[:]:
+            particle['pos'][0] += particle['vel'][0]
+            particle['pos'][1] += particle['vel'][1]
+            particle['vel'][0] *= 0.95
+            particle['vel'][1] *= 0.95
+            particle['life'] -= 1
+            
+            if particle['life'] <= 0:
+                self.particles.remove(particle)
+        
+        # Update food particles
+        for particle in self.food_particles[:]:
+            particle['pos'][0] += particle['vel'][0]
+            particle['pos'][1] += particle['vel'][1]
+            particle['life'] -= 1
+            
+            if particle['life'] <= 0:
+                self.food_particles.remove(particle)
+    
+    def handle_menu_events(self, event):
+        """Handle menu events"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE or event.key == pygame.K_RETURN:
+                self.state = GameState.PLAYING
+                self.reset_game()
+            elif event.key == pygame.K_s:
+                self.state = GameState.SETTINGS
+            elif event.key == pygame.K_ESCAPE or event.key == pygame.K_q:
+                return False
+        return True
+    
+    def handle_playing_events(self, event):
+        """Handle gameplay events"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.state = GameState.PAUSED
+            elif event.key == pygame.K_r:
+                self.reset_game()
+            # Movement keys
+            elif event.key in [pygame.K_UP, pygame.K_w] and self.direction[1] == 0:
+                self.next_direction = (0, -self.CELL_SIZE)
+            elif event.key in [pygame.K_DOWN, pygame.K_s] and self.direction[1] == 0:
+                self.next_direction = (0, self.CELL_SIZE)
+            elif event.key in [pygame.K_LEFT, pygame.K_a] and self.direction[0] == 0:
+                self.next_direction = (-self.CELL_SIZE, 0)
+            elif event.key in [pygame.K_RIGHT, pygame.K_d] and self.direction[0] == 0:
+                self.next_direction = (self.CELL_SIZE, 0)
+    
+    def handle_paused_events(self, event):
+        """Handle paused state events"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE or event.key == pygame.K_ESCAPE:
+                self.state = GameState.PLAYING
+            elif event.key == pygame.K_m:
+                self.state = GameState.MENU
+            elif event.key == pygame.K_r:
+                self.reset_game()
+                self.state = GameState.PLAYING
+    
+    def handle_game_over_events(self, event):
+        """Handle game over events"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r or event.key == pygame.K_SPACE:
+                self.reset_game()
+                self.state = GameState.PLAYING
+            elif event.key == pygame.K_m:
+                self.state = GameState.MENU
+            elif event.key == pygame.K_ESCAPE or event.key == pygame.K_q:
+                return False
+        return True
+    
+    def update_game(self):
+        """Update game logic"""
+        if self.state != GameState.PLAYING:
+            return
+        
+        # Update direction
+        self.direction = self.next_direction if self.next_direction != (0, 0) else self.direction
+        
+        if self.direction == (0, 0):
+            return
+        
+        # Move snake
+        head_x, head_y = self.snake[0]
+        new_head = (head_x + self.direction[0], head_y + self.direction[1])
+        
+        # Check wall collision
+        if (new_head[0] < 0 or new_head[0] >= self.WIDTH or 
+            new_head[1] < 0 or new_head[1] >= self.HEIGHT):
+            self.game_over("Hit the wall!")
+            return
+        
+        # Check self collision
+        if new_head in self.snake:
+            self.game_over("Ate yourself!")
+            return
+        
+        self.snake.insert(0, new_head)
+        
+        # Check food collision
+        if new_head == self.food_pos:
+            self.score += 1
+            self.create_particles(self.food_pos, self.COLORS['success'], 15)
+            self.food_pos = self.spawn_food()
+        else:
+            self.snake.pop()  # Remove tail
+        
+        # Create food particles
+        self.create_food_particles(self.food_pos)
+    
+    def game_over(self, reason: str):
+        """Handle game over"""
+        self.game_over_reason = reason
+        self.save_high_score()
+        self.state = GameState.GAME_OVER
+        self.create_particles(self.snake[0], self.COLORS['food'], 20)
+    
+    def draw_grid(self):
+        """Draw background grid"""
+        if not self.settings['grid_visible']:
+            return
+            
+        for x in range(0, self.WIDTH, self.CELL_SIZE):
+            pygame.draw.line(self.screen, self.COLORS['grid'], (x, 0), (x, self.HEIGHT))
+        for y in range(0, self.HEIGHT, self.CELL_SIZE):
+            pygame.draw.line(self.screen, self.COLORS['grid'], (0, y), (self.WIDTH, y))
+    
+    def draw_snake(self):
+        """Draw snake with gradient effect"""
+        for i, segment in enumerate(self.snake):
+            if i == 0:  # Head
+                color = self.COLORS['snake_head']
+                # Add glow effect for head
+                pygame.draw.rect(self.screen, color, 
+                               (segment[0] + 2, segment[1] + 2, 
+                                self.CELL_SIZE - 4, self.CELL_SIZE - 4))
+            else:  # Body
+                # Gradient from body to tail
+                ratio = (len(self.snake) - i) / len(self.snake)
+                body_color = self.COLORS['snake_body']
+                tail_color = self.COLORS['snake_tail']
+                
+                color = [
+                    int(tail_color[j] + (body_color[j] - tail_color[j]) * ratio)
+                    for j in range(3)
+                ]
+                
+                pygame.draw.rect(self.screen, color,
+                               (segment[0] + 1, segment[1] + 1,
+                                self.CELL_SIZE - 2, self.CELL_SIZE - 2))
+    
+    def draw_food(self):
+        """Draw food with pulsing effect"""
+        pulse = abs(math.sin(pygame.time.get_ticks() * 0.005)) * 5
+        size = self.CELL_SIZE - 4 + int(pulse)
+        offset = (self.CELL_SIZE - size) // 2
+        
+        # Draw glow effect
+        glow_size = size + 10
+        glow_offset = (self.CELL_SIZE - glow_size) // 2
+        glow_surf = pygame.Surface((glow_size, glow_size), pygame.SRCALPHA)
+        pygame.draw.circle(glow_surf, self.COLORS['food_glow'], 
+                          (glow_size // 2, glow_size // 2), glow_size // 2)
+        self.screen.blit(glow_surf, (self.food_pos[0] + glow_offset, 
+                                   self.food_pos[1] + glow_offset))
+        
+        # Draw food
+        pygame.draw.rect(self.screen, self.COLORS['food'],
+                        (self.food_pos[0] + offset, self.food_pos[1] + offset,
+                         size, size))
+    
+    def draw_particles(self):
+        """Draw all particles"""
+        # Draw explosion particles
+        for particle in self.particles:
+            alpha = int((particle['life'] / particle['max_life']) * 255)
+            color = (*particle['color'], alpha)
+            
+            surf = pygame.Surface((4, 4), pygame.SRCALPHA)
+            pygame.draw.circle(surf, color, (2, 2), 2)
+            self.screen.blit(surf, particle['pos'])
+        
+        # Draw food particles
+        for particle in self.food_particles:
+            alpha = int((particle['life'] / particle['max_life']) * 100)
+            color = (*self.COLORS['food'], alpha)
+            
+            surf = pygame.Surface((int(particle['size'] * 2), int(particle['size'] * 2)), pygame.SRCALPHA)
+            pygame.draw.circle(surf, color, 
+                             (int(particle['size']), int(particle['size'])), 
+                             int(particle['size']))
+            self.screen.blit(surf, particle['pos'])
+    
+    def draw_hud(self):
+        """Draw HUD elements"""
+        # Score
+        score_text = self.fonts['medium'].render(f"Score: {self.score}", True, self.COLORS['text_primary'])
+        self.screen.blit(score_text, (20, 20))
+        
+        # High score
+        high_score_text = self.fonts['small'].render(f"Best: {self.high_score}", True, self.COLORS['text_secondary'])
+        self.screen.blit(high_score_text, (20, 55))
+        
+        # Speed indicator
+        current_speed = self.settings['base_speed'] + (self.score // 3 if self.settings['speed_increase'] else 0)
+        speed_text = self.fonts['small'].render(f"Speed: {current_speed}", True, self.COLORS['text_secondary'])
+        self.screen.blit(speed_text, (20, 80))
+        
+        # Controls hint
+        controls_text = self.fonts['tiny'].render("ESC: Pause | R: Restart", True, self.COLORS['text_secondary'])
+        self.screen.blit(controls_text, (self.WIDTH - 200, self.HEIGHT - 25))
+    
+    def draw_menu(self):
+        """Draw main menu"""
+        self.menu_animation_time += 1
+        
+        # Animated background
+        for i in range(0, self.WIDTH, 50):
+            alpha = int(abs(math.sin((i + self.menu_animation_time) * 0.01)) * 30)
+            color = (*self.COLORS['accent'], alpha)
+            surf = pygame.Surface((2, self.HEIGHT), pygame.SRCALPHA)
+            surf.fill(color)
+            self.screen.blit(surf, (i, 0))
+        
+        # Title
+        title_y = 150 + math.sin(self.menu_animation_time * 0.02) * 10
+        title_text = self.fonts['title'].render("SNAKE GAME", True, self.COLORS['snake_head'])
+        title_rect = title_text.get_rect(center=(self.WIDTH // 2, title_y))
+        self.screen.blit(title_text, title_rect)
+        
+        subtitle_text = self.fonts['medium'].render("Professional Edition", True, self.COLORS['text_secondary'])
+        subtitle_rect = subtitle_text.get_rect(center=(self.WIDTH // 2, title_y + 60))
+        self.screen.blit(subtitle_text, subtitle_rect)
+        
+        # Menu options
+        menu_items = [
+            ("SPACE - Start Game", self.COLORS['text_primary']),
+            ("S - Settings", self.COLORS['text_secondary']),
+            ("ESC - Quit", self.COLORS['text_secondary'])
+        ]
+        
+        start_y = self.HEIGHT // 2 + 50
+        for i, (item, color) in enumerate(menu_items):
+            text = self.fonts['medium'].render(item, True, color)
+            rect = text.get_rect(center=(self.WIDTH // 2, start_y + i * 50))
+            self.screen.blit(text, rect)
+        
+        # High score display
+        if self.high_score > 0:
+            hs_text = self.fonts['large'].render(f"High Score: {self.high_score}", True, self.COLORS['success'])
+            hs_rect = hs_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT - 100))
+            self.screen.blit(hs_text, hs_rect)
+    
+    def draw_pause(self):
+        """Draw pause overlay"""
+        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 128))
+        self.screen.blit(overlay, (0, 0))
+        
+        pause_text = self.fonts['title'].render("PAUSED", True, self.COLORS['warning'])
+        pause_rect = pause_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 - 50))
+        self.screen.blit(pause_text, pause_rect)
+        
+        continue_text = self.fonts['medium'].render("Press SPACE to continue", True, self.COLORS['text_secondary'])
+        continue_rect = continue_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 + 20))
+        self.screen.blit(continue_text, continue_rect)
+    
+    def draw_game_over(self):
+        """Draw game over screen"""
+        self.game_over_animation_time += 1
+        
+        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
+        alpha = min(150, self.game_over_animation_time * 3)
+        overlay.fill((0, 0, 0, alpha))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Game over text
+        go_text = self.fonts['title'].render("GAME OVER", True, self.COLORS['food'])
+        go_rect = go_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 - 100))
+        self.screen.blit(go_text, go_rect)
+        
+        # Reason
+        reason_text = self.fonts['medium'].render(self.game_over_reason, True, self.COLORS['text_secondary'])
+        reason_rect = reason_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 - 50))
+        self.screen.blit(reason_text, reason_rect)
+        
+        # Final score
+        score_color = self.COLORS['success'] if self.score == self.high_score else self.COLORS['text_primary']
+        score_text = self.fonts['large'].render(f"Final Score: {self.score}", True, score_color)
+        score_rect = score_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2))
+        self.screen.blit(score_text, score_rect)
+        
+        # New high score
+        if self.score == self.high_score and self.score > 0:
+            new_hs_text = self.fonts['medium'].render("NEW HIGH SCORE!", True, self.COLORS['warning'])
+            new_hs_rect = new_hs_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 + 40))
+            self.screen.blit(new_hs_text, new_hs_rect)
+        
+        # Options
+        restart_text = self.fonts['medium'].render("R - Restart    M - Menu    ESC - Quit", True, self.COLORS['text_secondary'])
+        restart_rect = restart_text.get_rect(center=(self.WIDTH // 2, self.HEIGHT // 2 + 100))
+        self.screen.blit(restart_text, restart_rect)
+    
+    def run(self):
+        """Main game loop"""
+        running = True
+        
+        while running:
+            # Handle events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                    break
+                
+                # State-specific event handling
+                if self.state == GameState.MENU:
+                    running = self.handle_menu_events(event)
+                elif self.state == GameState.PLAYING:
+                    self.handle_playing_events(event)
+                elif self.state == GameState.PAUSED:
+                    self.handle_paused_events(event)
+                elif self.state == GameState.GAME_OVER:
+                    running = self.handle_game_over_events(event)
+            
+            # Update game logic
+            self.update_game()
+            self.update_particles()
+            
+            # Clear screen
+            self.screen.fill(self.COLORS['bg'])
+            
+            # Draw game elements
+            if self.state in [GameState.PLAYING, GameState.PAUSED, GameState.GAME_OVER]:
+                self.draw_grid()
+                self.draw_snake()
+                self.draw_food()
+                self.draw_particles()
+                self.draw_hud()
+                
+                if self.state == GameState.PAUSED:
+                    self.draw_pause()
+                elif self.state == GameState.GAME_OVER:
+                    self.draw_game_over()
+                    
+            elif self.state == GameState.MENU:
+                self.draw_menu()
+            
+            # Update display
+            pygame.display.flip()
+            
+            # Control frame rate
+            fps = self.settings['base_speed'] + (self.score // 3 if self.settings['speed_increase'] else 0)
+            self.clock.tick(fps)
+        
+        # Cleanup
+        self.save_settings()
+        pygame.quit()
+        sys.exit()
+
+def main():
+    """Main function"""
+    try:
+        game = SnakeGame()
+        game.run()
+    except Exception as e:
+        print(f"Error running game: {e}")
+        pygame.quit()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
